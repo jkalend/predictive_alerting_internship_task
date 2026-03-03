@@ -1,0 +1,5 @@
+.venv/
+data_swat/
+data_cmapss/
+.cursor/
+.vscode/
