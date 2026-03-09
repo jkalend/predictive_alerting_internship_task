@@ -12,3 +12,5 @@ src/config/local.py
 *.egg
 +dist/
 +build/
+__pycache__/
+*.npz
