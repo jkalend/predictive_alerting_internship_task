@@ -25,11 +25,11 @@ The sliding-window approach converts the raw time series into a standard tabular
 - **Labels**: 25 labeled anomaly windows from `anomaly_windows.csv`, derived from IBM's internal monitoring tools (Issue Tracker, Instant Messenger, Test Log).
 - **Class imbalance**: 2.78% of steps are positive (`active` mode, W=24, H=6). In strict `onset` mode (anomaly must start in next 30 min), only 0.35% are positive — too sparse for reliable training with 25 anomaly windows.
 
-**Feature reduction**: The raw dataset (`pivoted_data_all.parquet`) contains 117,448 columns — one per (datacenter, HTTP status code, aggregation type) combination — and would expand to 30–50 GB in RAM when fully loaded. A prior `reduce_features.py` preprocessing step (from the Chronos experiments) condensed this to 34 columns by selecting:
+**Feature reduction**: The raw dataset (`pivoted_data_all.parquet`) contains 117,448 columns — one per (datacenter, HTTP status code, aggregation type) combination — and would expand to 30–50 GB in RAM when fully loaded. The `scripts/reduce_features.py` script in this project performs the feature reduction: it uses DuckDB for memory-efficient, out-of-core aggregation of the unpivoted parquet and condenses this to 34 columns by selecting:
 - Global aggregates: total request count, per-status-code counts (2xx/3xx/4xx/5xx/other), error rates, average/max/median latency
 - Per-datacenter summaries (7 DCs × 3 metrics): 5xx count, total count, average latency
 
-The result (`reduced_features_full.parquet`, ~44 MB on disk) loads comfortably within available RAM and retains the most operationally relevant signals. Column filtering was applied using `pyarrow.parquet.read_table()` before loading into pandas to avoid materialising the full wide table.
+The result (`reduced_features_full.parquet`, ~44 MB on disk) loads comfortably within available RAM and retains the most operationally relevant signals. `load_ibm.py` reads this parquet directly; no further filtering is needed.
 
 ### 2.2 Synthetic Dataset (Secondary / Demonstration)
 
@@ -43,10 +43,10 @@ To demonstrate that the problem formulation is correct independently of dataset 
 ### 2.3 SWaT — Secure Water Treatment System
 
 - **Source**: iTrust Labs, SUTD (Dec 2015) — available via Kaggle `vishala28/swat-dataset-secure-water-treatment-system`, files at `data_swat/`
-- **Size**: 1,441,719 rows × 53 columns (Timestamp + 51 process sensors + label). Used at **stride=15** (15-second resolution) → 96,115 rows.
-- **Granularity**: 1-second intervals (original); downsampled to 15-second resolution to make RandomForest training feasible.
+- **Size**: 1,441,719 rows × 53 columns (Timestamp + 51 process sensors + label). The raw data is downsampled by stride for tractability; the **reported results use stride=5** (5-second resolution) → ~55k test samples. Alternative configurations (e.g. stride=15 for 15-second resolution) yield different sample counts.
+- **Granularity**: 1-second intervals (original); stride controls the effective resolution.
 - **Features**: 51 sensors covering all 6 stages of the water treatment plant: flow meters (FIT), level sensors (LIT), water quality analysers (AIT), motorised valves (MV), pumps (P), differential pressure indicators (DPIT), UV lamps (UV), pressure indicators (PIT).
-- **Labels**: `Normal` (7 days) and `Attack` (4 days, 36 distinct cyber-physical attacks). Label = 1 if attack active in next H=60 steps (15-minute horizon at 15-sec resolution).
+- **Labels**: `Normal` (7 days) and `Attack` (4 days, 36 distinct cyber-physical attacks). Label = 1 if attack active in next H=60 steps (e.g. 5-min horizon at stride=5, 15-min at stride=15).
 - **Class imbalance**: 1.94% positive in training, 19.88% in test. Attack scenarios cluster in the last 4 days — the test set covers the bulk of the attack period. This structural split is a known characteristic of the dataset.
 - **Train/test split**: Chronological 80/20. Training = normal operation; test = primarily attack period.
 
@@ -74,10 +74,10 @@ Five classifiers are evaluated:
 | **XGBoost** | Tree ensemble | Rolling stats | `scale_pos_weight` for imbalance |
 | **RandomForest** | Tree ensemble | Rolling stats | `class_weight='balanced'` |
 | **Ensemble** | Average of RF + XGBoost | Rolling stats | Combines both tree models |
-| **LSTM** | Recurrent neural net | Raw W-step sequences | PyTorch; learns temporal patterns directly |
-| **TCN** | Temporal ConvNet | Raw W-step sequences | PyTorch; dilated convolutions over time |
+| **LSTM** | Recurrent neural net | Raw W-step sequences | PyTorch; StandardScaler normalization; learns temporal patterns directly |
+| **TCN** | Temporal ConvNet | Raw W-step sequences | PyTorch; StandardScaler normalization; dilated convolutions over time |
 
-Tree ensembles operate on the CPU; LSTM and TCN use GPU when available. Tree models use rolling-statistics features; LSTM and TCN consume the raw window of metric values per channel.
+Tree ensembles operate on the CPU; LSTM and TCN use GPU when available. Tree models use rolling-statistics features; LSTM and TCN consume the raw window of metric values per channel. **Raw sequences are normalized with StandardScaler** (fit on train, transform train/val/test) before feeding to PyTorch — critical for C-MAPSS and SWaT where sensor scales differ wildly (e.g. core speeds ~8000 vs pressure ratios ~1.0); unscaled data causes gradient saturation and model collapse.
 
 **Why tree ensembles as primary?** The task specification emphasises correct problem formulation over model complexity. Tree ensembles are:
 - Well-calibrated for tabular data without extensive hyperparameter search.
@@ -91,7 +91,7 @@ Tree ensembles operate on the CPU; LSTM and TCN use GPU when available. Tree mod
 |---|---|---|---|---|
 | IBM Cloud | 24 steps (2 h) | 6 steps (30 min) | 5 min | Captures 2-hour context around anomalies; 30-min lead time for incident response |
 | Synthetic | 24 steps (2 h) | 6 steps (30 min) | 5 min | Matches IBM granularity |
-| SWaT | 60 steps (15 min) | 60 steps (15 min) | 15 sec | 15-min history captures sensor dynamics before attacks; 15-min alert lead time |
+| SWaT | 60 steps | 60 steps | stride-dependent (5 sec at stride=5) | W/H in steps; effective duration depends on stride |
 | C-MAPSS | 30 cycles | 30 cycles | 1 cycle | 30-cycle degradation context; label = 1 if RUL ≤ 30 cycles |
 
 ### 3.3 Feature Engineering
@@ -110,7 +110,7 @@ This yields **4 × C** features per sample. Rolling statistics are preferred ove
 
 ### 3.4 Class-Imbalance Handling
 
-The dataset is heavily imbalanced (~*[fill]%* positive). Two complementary strategies are used:
+The datasets are heavily imbalanced (~0.4–2.5% positive in the test sets, depending on dataset and masking). Two complementary strategies are used:
 
 - **XGBoost**: `scale_pos_weight = n_negative / n_positive` — upweights the minority class during gradient computation.
 - **RandomForest**: `class_weight='balanced'` — inversely weights each class proportional to its frequency.
@@ -122,20 +122,23 @@ In both cases, the raw probability score is used at inference time, and the oper
 Two label strategies are implemented (controlled by `--label-mode`):
 
 - **`onset`** (strict): label=1 if an anomaly *starts* in (t, t+H×5min]. With 25 IBM anomaly windows, this yields only 139 positives (0.35%) — far too sparse for a train set of 31k samples.
-- **`active`** (default): label=1 if any anomaly window is *active* (ongoing or about to start) within [t, t+H×5min]. This yields 1,096 positives (2.78%) and is operationally equivalent: it answers "will there be an anomaly active in the next 30 minutes?". This is the mode used for all results below.
+- **`active`** (default): label=1 if any anomaly window is *active* (ongoing or about to start) within [t, t+H×5min]. This yields 1,096 positives (2.78%) and is operationally equivalent: it answers "will there be an anomaly active in the next 30 minutes?". For IBM, Synthetic, and SWaT, the reported results use `active` labels **combined with `--mask-active-only`**, which excludes rows where an anomaly is already active at time *t*, so evaluation strictly measures onset prediction rather than continuation. C-MAPSS uses RUL-derived labels and is not masked.
 
 ---
 
 ## 4. Evaluation Setup
 
-### 4.1 Train / Test Split
+### 4.1 Train / Validation / Test Split
 
-A **chronological 80/20 split** is used: the first 80% of time steps form the training set, the last 20% form the test set. This is the only valid split for time series — random shuffling would leak future information into training.
+A **64% train / 16% validation / 20% test** chronological split is used. The validation set is used exclusively for threshold calibration — the operating threshold is tuned on validation to achieve ≥80% recall with maximum precision, then applied to the test set. This avoids **threshold data leakage** (oracle evaluation) that would occur if the threshold were optimized on the test set itself.
 
-| Split | Size (IBM full dataset) | Period |
+| Split | Size (IBM full dataset) | Purpose |
 |---|---|---|
-| Train | 31,492 steps (~110 days) | 2024-01-22 to 2024-05-11 (20 anomaly windows) |
-| Test  |  7,873 steps (~27 days)  | 2024-05-11 to 2024-06-07 (5 anomaly windows: a21–a25) |
+| Train | ~25,194 steps | Model fitting |
+| Validation | ~6,298 steps | Threshold calibration (≥80% recall) |
+| Test | ~7,873 steps (→ 7,682 with masking) | Final evaluation only |
+
+The reported IBM test size (7,682) is lower than the nominal 20% split (~7,873) because `--mask-active-only` excludes rows where an anomaly is already active, and rolling-window warm-up drops initial rows. For C-MAPSS, the official train file is split 80/20 per-engine (last 20% of each engine's cycles → validation); the test file remains the held-out test set.
 
 ### 4.2 Metrics
 
@@ -149,28 +152,28 @@ A **chronological 80/20 split** is used: the first 80% of time steps form the tr
 
 ### 4.3 Alert Threshold Tuning
 
-Rather than using a fixed 0.5 threshold, a threshold sweep is performed over all unique probability values in the test set. The reported operating points are:
+Rather than using a fixed 0.5 threshold, the operating point is calibrated as follows:
 
 1. **Default (0.5)**: Baseline behaviour.
-2. **Tuned (≥80% recall)**: The highest-precision threshold that still achieves at least 80% recall — matching the evaluation convention from the Chronos experiments and reflecting a realistic alerting requirement.
+2. **Tuned (≥80% recall)**: A threshold sweep is performed on the **validation set** (not the test set). The highest-precision threshold that achieves at least 80% recall on validation is selected, then applied to the test set for reporting. This prevents data leakage — the test set is never used for threshold selection.
 
 ---
 
 ## 5. Evaluation Results
 
-All results use the `active` label mode. Test set sizes: IBM = 7,873 (133 positives, 1.7%); Synthetic = 2,000 (138 positives, 6.9%); SWaT = 57,669 (10,003 positives, 17.3%); C-MAPSS = 13,096 (332 positives, 2.5%).
+Results follow the protocol described in Section 3.5: IBM, Synthetic, and SWaT use `active` labels with `--mask-active-only`; C-MAPSS uses RUL-derived labels (no masking). Test set sizes (current run): IBM = 7,682 (30 positives, 0.4%); Synthetic = 1,894 (30 positives, 1.6%); SWaT = 55,484 (1,073 positives, 1.9%); C-MAPSS = 13,096 (332 positives, 2.5%).
 
 ### 5.1 IBM Dataset
 
 | Classifier | ROC-AUC | PR-AUC | F1 @ 0.5 | Tuned Recall | Tuned Precision | Tuned F1 |
 |---|---|---|---|---|---|---|
-| XGBoost | 0.390 | 0.016 | 0.00% | 100.00% | 1.80% | 3.53% |
-| RandomForest | 0.337 | 0.012 | 0.00% | 97.74% | 1.75% | 3.44% |
-| Ensemble | 0.335 | 0.012 | 0.00% | 100.00% | 1.77% | 3.47% |
-| LSTM | 0.426 | 0.017 | 3.28% | 100.00% | 1.69% | 3.33% |
-| **TCN** | **0.502** | 0.017 | 3.33% | 100.00% | 1.69% | 3.33% |
+| **Ensemble** | **0.697** | 0.011 | 0.00% | 100.00% | 0.40% | 0.81% |
+| XGBoost | 0.692 | 0.015 | 0.00% | 100.00% | 0.42% | 0.83% |
+| RandomForest | 0.691 | 0.011 | 0.00% | 100.00% | 0.39% | 0.78% |
+| TCN | 0.623 | 0.005 | 0.00% | 100.00% | 0.39% | 0.78% |
+| LSTM | 0.566 | 0.004 | 0.00% | 100.00% | 0.42% | 0.84% |
 
-Tree models predict zero positives at threshold 0.5; LSTM and TCN achieve ~100% recall at 0.5 but with very low precision (~1.7%). TCN has the highest ROC-AUC (0.50) — barely above chance — indicating features are not predictive of IBM anomalies.
+Tree models and ensemble achieve the highest ROC-AUC (~0.69–0.70) but still barely above chance. All models predict zero positives at threshold 0.5. At tuned threshold, 100% recall is achieved but precision remains ~0.4% — thousands of false alarms for 30 true positives. Features are not predictive of IBM anomalies.
 
 ---
 
@@ -178,13 +181,13 @@ Tree models predict zero positives at threshold 0.5; LSTM and TCN achieve ~100% 
 
 | Classifier | ROC-AUC | PR-AUC | F1 @ 0.5 | Tuned Recall | Tuned Precision | Tuned F1 |
 |---|---|---|---|---|---|---|
-| XGBoost | 0.992 | 0.979 | 97.01% | 94.20% | 100.00% | 97.01% |
-| RandomForest | 0.998 | 0.990 | 96.63% | 94.20% | 100.00% | 97.01% |
-| Ensemble | 0.998 | 0.990 | 97.01% | 94.20% | 100.00% | 97.01% |
-| LSTM | **0.9997** | **0.997** | 72.63% | 96.38% | 100.00% | **98.15%** |
-| TCN | 0.997 | 0.985 | 95.34% | 94.20% | 100.00% | 97.01% |
+| LSTM | **0.993** | 0.831 | 74.51% | 56.67% | 100.00% | 72.34% |
+| TCN | 0.992 | 0.878 | 82.35% | 80.00% | 100.00% | **88.89%** |
+| RandomForest | 0.980 | 0.942 | 82.35% | 63.33% | 100.00% | 77.55% |
+| Ensemble | 0.967 | 0.941 | 84.62% | 73.33% | 100.00% | 84.62% |
+| XGBoost | 0.924 | 0.802 | 84.62% | 73.33% | 100.00% | 84.62% |
 
-All classifiers excel. LSTM achieves the highest tuned F1 (98.15%) and best ROC/PR-AUC; tree models and TCN reach 97% F1 with zero false positives at default or tuned threshold.
+All classifiers excel. **TCN achieves the best tuned F1 (88.89%)** with 80% recall and 100% precision. XGBoost and ensemble reach 84.62% F1 at default threshold with zero false positives. The formulation is validated: when the signal is present, models detect it effectively.
 
 ---
 
@@ -192,13 +195,13 @@ All classifiers excel. LSTM achieves the highest tuned F1 (98.15%) and best ROC/
 
 | Classifier | ROC-AUC | PR-AUC | F1 @ 0.5 | Tuned Recall | Tuned Precision | Tuned F1 |
 |---|---|---|---|---|---|---|
-| XGBoost | 0.787 | 0.409 | 0.00% | 80.03% | 30.73% | 44.40% |
-| RandomForest | 0.814 | 0.603 | 0.00% | 80.03% | 29.82% | 43.45% |
-| Ensemble | 0.814 | 0.603 | 0.00% | 80.03% | 29.82% | 43.45% |
-| LSTM | 0.276 | 0.125 | 31.50% | 97.87% | 19.10% | 31.97% |
-| **TCN** | **0.818** | **0.746** | **51.14%** | 80.01% | 28.25% | 41.75% |
+| LSTM | 0.565 | 0.032 | 0.00% | 87.42% | 1.86% | 3.64% |
+| XGBoost | 0.500 | 0.019 | 0.00% | 100.00% | 1.93% | 3.79% |
+| RandomForest | 0.500 | 0.019 | 3.79% | 100.00% | 1.93% | 3.79% |
+| Ensemble | 0.500 | 0.019 | 3.79% | 100.00% | 1.93% | 3.79% |
+| TCN | 0.500 | 0.019 | 0.00% | 100.00% | 1.93% | 3.79% |
 
-**TCN is the best SWaT model**: highest ROC-AUC (0.82) and PR-AUC (0.75), and the only model achieving usable F1 (51%) at threshold 0.5. XGBoost and RF have improved markedly vs. earlier runs (ROC-AUC ~0.79–0.81 vs. 0.40–0.73). LSTM fails (ROC-AUC 0.28) — it over-predicts positives, yielding high recall but very low precision.
+**All models perform at or near chance** (ROC-AUC 0.50). Tree models and TCN achieve 100% recall at tuned threshold but with ~1.9% precision — no discriminative signal. LSTM has slightly higher ROC-AUC (0.57) but still poor. The current SWaT split (stride=5) or preprocessing yields minimal learnable signal; the train/test distribution may differ substantially.
 
 ---
 
@@ -206,13 +209,13 @@ All classifiers excel. LSTM achieves the highest tuned F1 (98.15%) and best ROC/
 
 | Classifier | ROC-AUC | PR-AUC | F1 @ 0.5 | Tuned Recall | Tuned Precision | Tuned F1 |
 |---|---|---|---|---|---|---|
-| **XGBoost** | **0.997** | **0.904** | **79.64%** | 80.42% | 79.23% | 79.82% |
-| **RandomForest** | 0.996 | 0.887 | 78.08% | 81.02% | 76.64% | 78.77% |
-| **Ensemble** | 0.997 | 0.901 | 79.57% | 81.33% | 79.18% | **80.24%** |
-| LSTM | 0.614 | 0.033 | 6.31% | 100.00% | 3.26% | 6.31% |
-| TCN | 0.962 | 0.580 | 39.82% | 80.12% | 31.04% | 44.74% |
+| **XGBoost** | **0.985** | **0.654** | 10.76% | 84.34% | 44.30% | **58.09%** |
+| Ensemble | 0.981 | 0.574 | 4.12% | 79.52% | 37.24% | 50.72% |
+| RandomForest | 0.955 | 0.492 | 0.00% | 77.11% | 36.99% | 50.00% |
+| TCN | 0.627 | 0.037 | 0.58% | 100.00% | 2.54% | 4.94% |
+| LSTM | 0.562 | 0.028 | 3.25% | 100.00% | 2.57% | 5.01% |
 
-Tree-based models dominate C-MAPSS. XGBoost and ensemble achieve ~80% F1 at default threshold. LSTM collapses (ROC-AUC 0.61, PR-AUC 0.03) — it predicts almost everything positive. TCN is moderate (ROC-AUC 0.96) but tuned F1 (44.7%) is far below tree models.
+**Tree-based models dominate C-MAPSS.** XGBoost achieves the best tuned F1 (58.09%) with ROC-AUC 0.985 and PR-AUC 0.65. RF and ensemble reach ~50% tuned F1. LSTM and TCN collapse (ROC-AUC 0.56–0.63, PR-AUC ~0.03) — they predict almost everything positive. Per-engine rolling statistics are the right abstraction for monotonic engine degradation.
 
 ---
 
@@ -220,14 +223,14 @@ Tree-based models dominate C-MAPSS. XGBoost and ensemble achieve ~80% F1 at defa
 
 | Dataset | Classifier | F1 @ 0.5 | Tuned F1 | ROC-AUC | PR-AUC |
 |---|---|---|---|---|---|
-| IBM | TCN (best) | 3.33% | 3.33% | 0.502 | 0.017 |
-| IBM | XGBoost | 0.00% | 3.53% | 0.390 | 0.016 |
-| Synthetic | LSTM (best) | 72.63% | **98.15%** | 0.9997 | 0.997 |
-| Synthetic | XGBoost | 97.01% | 97.01% | 0.992 | 0.979 |
-| SWaT | **TCN (best)** | **51.14%** | 41.75% | **0.818** | **0.746** |
-| SWaT | XGBoost | 0.00% | 44.40% | 0.787 | 0.409 |
-| C-MAPSS | **Ensemble (best)** | 79.57% | **80.24%** | 0.997 | 0.901 |
-| C-MAPSS | XGBoost | 79.64% | 79.82% | 0.997 | 0.904 |
+| IBM | Ensemble (best) | 0.00% | 0.81% | 0.697 | 0.011 |
+| IBM | XGBoost | 0.00% | 0.83% | 0.692 | 0.015 |
+| Synthetic | **TCN (best)** | 82.35% | **88.89%** | 0.992 | 0.878 |
+| Synthetic | XGBoost | 84.62% | 84.62% | 0.924 | 0.802 |
+| SWaT | LSTM (best) | 0.00% | 3.64% | 0.565 | 0.032 |
+| SWaT | XGBoost | 0.00% | 3.79% | 0.500 | 0.019 |
+| C-MAPSS | **XGBoost (best)** | 10.76% | **58.09%** | **0.985** | **0.654** |
+| C-MAPSS | Ensemble | 4.12% | 50.72% | 0.981 | 0.574 |
 
 ---
 
@@ -235,7 +238,7 @@ Tree-based models dominate C-MAPSS. XGBoost and ensemble achieve ~80% F1 at defa
 
 ### 6.1 IBM Dataset Results
 
-All five classifiers produce **ROC-AUC at or below 0.5** on the IBM test set. TCN reaches 0.50 (barely above chance); tree models and ensemble are worse (0.33–0.39). At threshold 0.5, tree models predict zero positives; LSTM and TCN achieve 98–100% recall but with ~1.7% precision (thousands of false alarms).
+Tree models and ensemble achieve ROC-AUC ~0.69–0.70 — modestly above chance — while LSTM and TCN are worse (0.56–0.62). At threshold 0.5, all models predict zero positives. At tuned threshold, 100% recall is achieved but precision remains ~0.4%, yielding thousands of false alarms for 30 true positives.
 
 **Root cause — features are not predictive of future IBM anomalies:**
 
@@ -245,35 +248,33 @@ The IBM anomaly windows (a1–a25) capture infrastructure-level incidents identi
 
 ### 6.2 Synthetic Dataset Results
 
-All five classifiers achieve **≥95% F1** (tuned). Tree models and TCN reach 97% F1 with zero false positives at default or tuned threshold. LSTM achieves the highest tuned F1 (98.15%) and best ROC/PR-AUC (0.9997 / 0.997), confirming that when the signal is present in the raw sequence, neural models can exploit it effectively.
-
-The formulation is validated: a 30-minute horizon is sufficient when the signal is present in the features or raw window.
+All five classifiers achieve strong performance. **TCN achieves the best tuned F1 (88.89%)** with 80% recall and 100% precision. XGBoost and ensemble reach 84.62% F1 at default threshold with zero false positives. LSTM has the highest ROC-AUC (0.99) but lower tuned F1 due to recall–precision trade-off. The fact that TCN wins here validates that temporal convolutional networks are highly effective when a true sequential precursor (the ramp-up) exists. The formulation is validated: a 30-minute horizon is sufficient when the signal is present.
 
 ### 6.3 SWaT Dataset Results
 
-**TCN is the best SWaT model** (ROC-AUC 0.82, PR-AUC 0.75, F1 51% at 0.5). Raw-sequence modeling captures pre-attack sensor dynamics that rolling statistics miss. XGBoost and RandomForest have improved substantially (ROC-AUC 0.79–0.81 vs. earlier 0.40–0.73), suggesting the current SWaT split or data preprocessing yields more learnable signal. LSTM fails (ROC-AUC 0.28) — it over-predicts positives, achieving high recall but very low precision.
+**All models perform at or near chance** (ROC-AUC 0.50). LSTM has slightly higher ROC-AUC (0.57) but still poor. Tree models, ensemble, and TCN achieve 100% recall at tuned threshold but with ~1.9% precision — no discriminative signal.
 
-**Root cause of difficulty**: The chronological 80/20 split places normal operation in training and attack scenarios largely in test. The test set is 17.3% positive; training is far more imbalanced. TCN’s ability to model raw sequences helps it generalise better than tree models on rolling stats.
+The collapse of performance compared to earlier, unmasked runs *indicates* that the models were previously relying on active attack signatures. When forced to predict the onset of an attack from healthy precursor data, the models fail. This *suggests* SWaT attacks may be instantaneous or lack a measurable 15-minute precursor in the sensor data, though train/test distribution shift and preprocessing choices (e.g. stride) are alternative explanations. The current configuration (stride=5, 55k test samples, 1.9% positive) yields minimal learnable signal.
 
 ### 6.4 C-MAPSS Dataset Results
 
-**Tree-based models dominate C-MAPSS.** XGBoost, RandomForest, and ensemble achieve 78–80% F1 at default threshold with ROC-AUC 0.996–0.997. The tabular rolling-statistics representation is well-suited to gradual, monotonic engine degradation.
+**Tree-based models dominate C-MAPSS.** XGBoost achieves the best tuned F1 (58.09%) with ROC-AUC 0.985 and PR-AUC 0.65. RF and ensemble reach ~50% tuned F1. The tabular rolling-statistics representation is well-suited to gradual, monotonic engine degradation.
 
-**LSTM fails** (ROC-AUC 0.61, PR-AUC 0.03) — it predicts almost everything positive, suggesting it does not learn the degradation pattern from raw sequences. **TCN is moderate** (ROC-AUC 0.96) but tuned F1 (44.7%) is far below tree models. Per-engine rolling statistics appear to be the right abstraction for this dataset; raw sequences may add noise or require different architectures.
+**LSTM and TCN collapse** (ROC-AUC 0.56–0.63, PR-AUC ~0.03) — they predict almost everything positive, suggesting they do not learn the degradation pattern from raw sequences. Despite StandardScaler normalization, out-of-the-box LSTMs and TCNs struggle compared to XGBoost given rolling stats. Per-engine rolling statistics appear to be the right abstraction; raw sequences may add noise or require different architectures.
 
 ### 6.5 Comparison: Tree Models vs. Neural Models
 
 | Dataset | Best model | Why |
 |---|---|---|
-| IBM | TCN (still poor) | Slightly above chance; no model succeeds |
-| Synthetic | LSTM | Raw sequence captures ramp-up; all models work |
-| SWaT | **TCN** | Raw sequences capture attack dynamics; trees improved but TCN best |
-| C-MAPSS | **XGBoost / Ensemble** | Rolling stats suit monotonic degradation; LSTM/TCN underperform |
+| IBM | Ensemble (still poor) | ROC-AUC ~0.70; no model succeeds |
+| Synthetic | **TCN** | Best tuned F1 (89%); all models work |
+| SWaT | LSTM (still poor) | ROC-AUC 0.57; all near chance |
+| C-MAPSS | **XGBoost** | Rolling stats suit monotonic degradation; LSTM/TCN collapse |
 
 **Takeaways:**
-- **Synthetic**: Neural and tree models both excel; formulation validated.
-- **SWaT**: TCN’s raw-sequence modeling is advantageous; tree models have improved.
-- **C-MAPSS**: Tree models on rolling stats are optimal; neural models struggle.
+- **Synthetic**: Neural and tree models both excel; TCN best; formulation validated.
+- **SWaT**: All models fail; configuration or distribution shift limits learnability.
+- **C-MAPSS**: Tree models on rolling stats are optimal; neural models collapse.
 - **IBM**: All models fail; feature quality is the bottleneck, not model choice.
 
 ### 6.6 Feature Importances (Tree Models)
@@ -284,7 +285,7 @@ The formulation is validated: a 30-minute horizon is sufficient when the signal 
 
 **C-MAPSS XGBoost:** Sensors in the T30/T50 range (stage temperatures) and NRc (corrected core speed ratio) degrade monotonically in HPC faults; rolling mean and delta features capture degradation level and rate.
 
-**SWaT:** Level sensors (LIT) and flow meters (FIT) should dominate since attacks target pumps and valves; delta features capture sudden step-changes. TCN’s raw-sequence input avoids explicit feature engineering and learns temporal patterns directly.
+**SWaT:** Level sensors (LIT) and flow meters (FIT) should dominate since attacks target pumps and valves; delta features capture sudden step-changes. In the current run, all models perform at chance — no clear feature dominance was observed.
 
 ---
 
@@ -306,3 +307,29 @@ The formulation is validated: a 30-minute horizon is sufficient when the signal 
 3. **Online learning / periodic retraining**: Retrain the model on a rolling window of recent data (e.g., last 30 days) to adapt to evolving traffic patterns.
 4. **Multi-horizon ensemble**: Train separate models for H = 1, 3, 6, 12 steps and combine their scores to give operators different lead times.
 5. **Alarm deduplication**: Suppress repeated alerts within the same incident window to avoid flooding the on-call queue.
+
+---
+
+## 9. Methodology Updates (Post-Review)
+
+Following an expert review, the following fixes were implemented to improve scientific rigor:
+
+1. **LSTM/TCN normalization**: Raw sequences fed to PyTorch models are now scaled with `StandardScaler` (fit on train, transform train/val/test). C-MAPSS and SWaT sensors have wildly divergent scales; unscaled data caused gradient saturation and LSTM collapse (e.g. ROC-AUC 0.28 on SWaT, 0.61 on C-MAPSS). The scaler is saved with the model for inference.
+
+2. **Threshold data leakage fix**: The "Tuned F1" was previously computed by sweeping thresholds on the test set (oracle evaluation). The pipeline now uses a 64/16/20 train/validation/test split. The threshold is tuned on validation to achieve ≥80% recall with maximum precision, then applied strictly to the test set. The `optimal_threshold` is saved in the predictions `.npz` for evaluation.
+
+3. **Onset-only option** (`--mask-active-only`): For true predictive evaluation, the model can be restricted to samples where no incident is active at time *t*. This excludes rows where an anomaly is already ongoing, forcing the model to predict *onset* rather than *continuation*. Available for IBM, Synthetic, and SWaT. C-MAPSS uses RUL-derived labels and is not affected.
+
+---
+
+## 10. Test Suite
+
+A pytest-based test suite was added to ensure correctness of the pipeline and to support future refactoring. The rationale is threefold:
+
+1. **Regression prevention**: The pipeline involves multiple data loaders, feature engineering (rolling stats, per-group windows), and model training paths. Tests catch unintended breakage when changing window logic, label semantics, or classifier wiring.
+
+2. **Documentation of expected behaviour**: Unit tests for `make_labels`, `make_features`, `make_raw_windows`, and `make_mask_normal_at_t` encode the intended semantics (e.g. onset vs active mode, per-engine grouping for C-MAPSS). They serve as executable specifications for the sliding-window formulation.
+
+3. **CI-ready, data-independent coverage**: Tests use synthetic data or small fixtures only. No IBM, SWaT, or C-MAPSS files are required, so the suite runs in any environment (e.g. CI) without downloading datasets. Integration smoke tests run the pipeline on synthetic data with `max_rows=300–400` to verify end-to-end execution.
+
+**Structure**: `tests/test_windows.py` (feature extraction and labels), `tests/test_synthetic.py` (synthetic generator), `tests/test_train.py` (build_model, ensemble, `run()` on synthetic), `tests/test_evaluate.py` (evaluate_file with mocked .npz), `tests/test_pipeline.py` (run_pipeline.py smoke tests). Run with `python -m pytest tests/ -v`.

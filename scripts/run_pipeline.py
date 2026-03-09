@@ -1,6 +1,9 @@
 """End-to-end pipeline: train all model combinations, then evaluate.
 
-Run from the project root:
+Install the project first (from project root):
+    pip install -e .
+
+Then run:
     python scripts/run_pipeline.py [options]
 
 Default runs all four datasets × two classifiers = 8 combinations:
@@ -17,10 +20,7 @@ Default runs all four datasets × two classifiers = 8 combinations:
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.models.train import run as train_run
 from src.models.evaluate import evaluate_file
@@ -48,6 +48,11 @@ def main() -> None:
         "--stride", type=int, default=5,
         help="Downsample SWaT: keep every Nth row (default 5 = 5-second resolution)",
     )
+    parser.add_argument(
+        "--mask-active-only",
+        action="store_true",
+        help="Exclude rows where incident is already active (onset-only). Applies to IBM, Synthetic, SWaT; C-MAPSS unchanged.",
+    )
     args = parser.parse_args()
 
     if args.data == "both":
@@ -73,6 +78,7 @@ def main() -> None:
                 max_rows=args.max_rows,
                 stride=args.stride,
                 label_mode="active",
+                mask_active_only=args.mask_active_only,
             )
             results.append(info)
 

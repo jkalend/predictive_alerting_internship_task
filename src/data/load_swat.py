@@ -17,7 +17,7 @@ H = 60 steps  → predict whether an attack will be active within the next minut
 
 stride : downsample every N rows (default 1 = full resolution)
          Use stride=5 to reduce to 5-second resolution (~288k rows) if memory
-         is tight on a 32 GB system.
+         is tight
 """
 
 from __future__ import annotations

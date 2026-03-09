@@ -134,8 +134,8 @@ class SequentialWrapper:
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> SequentialWrapper:
         """Train on raw windows X of shape (n_samples, seq_len, n_features)."""
-        X_t = torch.from_numpy(X).float().to(self.device)
-        y_t = torch.from_numpy(y).float().unsqueeze(1).to(self.device)
+        X_t = torch.from_numpy(np.asarray(X).copy()).float().to(self.device)
+        y_t = torch.from_numpy(np.asarray(y).copy()).float().unsqueeze(1).to(self.device)
 
         pos_weight = torch.tensor(
             [self.scale_pos_weight], dtype=torch.float32, device=self.device

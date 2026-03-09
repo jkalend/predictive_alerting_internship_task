@@ -105,6 +105,26 @@ def make_labels(
     return labels.astype(int)
 
 
+def make_mask_normal_at_t(
+    df: pd.DataFrame,
+    anomaly_df: pd.DataFrame,
+) -> np.ndarray:
+    """Boolean mask: True for rows where no anomaly is active at time t.
+
+    Used for onset-only evaluation: exclude rows where an incident is already
+    ongoing, forcing the model to predict onset rather than continuation.
+    """
+    ts = df["interval_start"].values.astype("datetime64[ns]")
+    mask = np.ones(len(df), dtype=bool)
+    for _, row in anomaly_df.iterrows():
+        a_start = np.datetime64(row["anomaly_start"].to_datetime64())
+        a_end = np.datetime64(row["anomaly_end"].to_datetime64())
+        # Exclude rows where t is inside [a_start, a_end]
+        inside = (ts >= a_start) & (ts <= a_end)
+        mask &= ~inside
+    return mask
+
+
 def make_features(
     df: pd.DataFrame,
     W: int = W_DEFAULT,

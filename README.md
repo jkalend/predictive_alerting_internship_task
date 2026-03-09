@@ -7,14 +7,16 @@ Predicts whether an incident will occur within the next **H = 6 steps (30 minute
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -e .
 ```
+
+**IBM Cloud data**: Copy `src/config/local.example.py` to `src/config/local.py` and set `IBM_DATA_DIR` to your data path. `local.py` is gitignored.
 
 ## Datasets
 
 | Dataset | Location | Source |
 |---|---|---|
-| IBM Cloud | `E:/Side-Projects/chronos-experiments-3-done-NotOnGH/data/` | [Zenodo 14062900](https://zenodo.org/records/14062900) |
+| IBM Cloud | Configure in `src/config/local.py` | [Zenodo 14062900](https://zenodo.org/records/14062900) |
 | SWaT | `data_swat/merged.csv` | [Kaggle vishala28/swat-dataset-secure-water-treatment-system](https://www.kaggle.com/datasets/vishala28/swat-dataset-secure-water-treatment-system) |
 | C-MAPSS | `data_cmapss/train_FD001.txt` etc. | [Kaggle palbha/cmapss-jet-engine-simulated-data](https://www.kaggle.com/datasets/palbha/cmapss-jet-engine-simulated-data) |
 | Synthetic | Generated on-the-fly | — |
@@ -82,6 +84,7 @@ src/
     evaluate.py       — threshold sweep, metrics, PR-curve plots
 scripts/
   run_pipeline.py     — end-to-end pipeline runner
+  reduce_features.py  — IBM Cloud feature reduction (unpivoted → ~34 cols via DuckDB)
 docs/
   task1_report.md     — full report with modeling choices, analysis, and results
 outputs/              — saved models, predictions, PR-curve plots

@@ -125,7 +125,6 @@ def _sample_centers(
 ) -> list:
     """Sample anomaly center indices with minimum spacing."""
     centers = []
-    forbidden: set = set()
     attempts = 0
     while len(centers) < n_anomalies and attempts < n_anomalies * 50:
         c = int(rng.integers(lead + 5, n_steps - 30))
