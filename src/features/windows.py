@@ -237,9 +237,10 @@ def make_raw_windows(
 
     if group_col is not None:
         for _, grp in df.groupby(group_col):
-            idx = grp.index.values
+            idx = grp.index
+            positions = df.index.get_indexer(idx)
             vals = grp[avail].fillna(0.0).values.astype(np.float32)
-            for i, pos in enumerate(idx):
+            for i, pos in enumerate(positions):
                 start = max(0, i - W + 1)
                 seg_len = i - start + 1
                 out[pos, W - seg_len :, :] = vals[start : i + 1, :]

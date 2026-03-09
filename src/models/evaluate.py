@@ -48,10 +48,10 @@ def evaluate_file(pred_path: str | Path, recall_target: float = 0.80) -> pd.Data
     pd.DataFrame with one row per evaluated threshold.
     """
     pred_path = Path(pred_path)
-    data = np.load(pred_path, allow_pickle=True)
-    proba: np.ndarray = data["proba"]
-    y_true: np.ndarray = data["y_true"]
-    optimal_threshold = float(data["optimal_threshold"]) if "optimal_threshold" in data else None
+    with np.load(pred_path, allow_pickle=False) as data:
+        proba: np.ndarray = data["proba"].copy()
+        y_true: np.ndarray = data["y_true"].copy()
+        optimal_threshold = float(data["optimal_threshold"]) if "optimal_threshold" in data else None
 
     tag = pred_path.stem.replace("predictions_", "")
     pos = int(y_true.sum())

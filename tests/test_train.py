@@ -28,7 +28,7 @@ class TestProbaPositive:
         p = np.array([[1.0], [0.0], [0.5]])
         out = _proba_positive(p)
         assert out.shape == (3,)
-        np.testing.assert_array_almost_equal(out, [1.0, 0.0, 0.5])
+        np.testing.assert_array_almost_equal(out, p.ravel())
 
 
 class TestEnsembleRFXGB:

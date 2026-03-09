@@ -6,3 +6,4 @@ xgboost>=2.0
 matplotlib>=3.7
 torch>=2.0
 pytest>=7.0
+kagglehub

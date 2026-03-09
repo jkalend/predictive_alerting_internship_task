@@ -8,3 +8,7 @@ __pycache__/
 
 # Local config (paths, secrets) — copy from src/config/local.example.py
 src/config/local.py
+*.egg-info/
+*.egg
++dist/
++build/

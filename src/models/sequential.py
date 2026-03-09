@@ -134,8 +134,8 @@ class SequentialWrapper:
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> SequentialWrapper:
         """Train on raw windows X of shape (n_samples, seq_len, n_features)."""
-        X_t = torch.from_numpy(np.asarray(X).copy()).float().to(self.device)
-        y_t = torch.from_numpy(np.asarray(y).copy()).float().unsqueeze(1).to(self.device)
+        X_t = torch.from_numpy(np.asarray(X).copy()).float()
+        y_t = torch.from_numpy(np.asarray(y).copy()).float().unsqueeze(1)
 
         pos_weight = torch.tensor(
             [self.scale_pos_weight], dtype=torch.float32, device=self.device
@@ -151,6 +151,8 @@ class SequentialWrapper:
         self.model_.train()
         for _ in range(self.epochs):
             for xb, yb in loader:
+                xb = xb.to(self.device)
+                yb = yb.to(self.device)
                 opt.zero_grad()
                 logits = self.model_(xb)
                 loss = criterion(logits, yb.squeeze(-1))
@@ -164,8 +166,13 @@ class SequentialWrapper:
         if self.model_ is None:
             raise RuntimeError("Model not fitted")
         self.model_.eval()
-        X_t = torch.from_numpy(X).float().to(self.device)
+        X_t = torch.from_numpy(X).float()
+        dataset = TensorDataset(X_t)
+        loader = DataLoader(dataset, batch_size=self.batch_size)
+        probs_list = []
         with torch.no_grad():
-            logits = self.model_(X_t)
-            probs = torch.sigmoid(logits).cpu().numpy()
-        return probs
+            for (xb,) in loader:
+                xb = xb.to(self.device)
+                logits = self.model_(xb)
+                probs_list.append(torch.sigmoid(logits).cpu())
+        return torch.cat(probs_list, dim=0).numpy()

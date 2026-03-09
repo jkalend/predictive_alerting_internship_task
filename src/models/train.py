@@ -309,9 +309,10 @@ def _prepare_cmapss(W: int, H: int):
     train_sub = train_df.loc[train_idx].reset_index(drop=True)
     val_sub = train_df.loc[val_idx].reset_index(drop=True)
 
-    X_train = make_features(
+    X_train_df = make_features(
         train_sub, W=W, group_col="unit_number", feature_cols=CMAPSS_FEATURES
-    ).values
+    )
+    X_train = X_train_df.values
     X_val = make_features(
         val_sub, W=W, group_col="unit_number", feature_cols=CMAPSS_FEATURES
     ).values
@@ -332,11 +333,7 @@ def _prepare_cmapss(W: int, H: int):
     y_val = val_sub["label"].values
     y_test = test_df["label"].values
     timestamps = test_df["time_cycles"].values
-    feature_names = [
-        f"{c}_{stat}{W}"
-        for c in CMAPSS_FEATURES
-        for stat in ("mean", "std", "max", "last", f"delta{W}", f"delta{W//2}")
-    ]
+    feature_names = list(X_train_df.columns)
     n_raw_features = X_train_seq.shape[2]
 
     return (

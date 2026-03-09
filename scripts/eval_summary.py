@@ -23,14 +23,22 @@ def main():
             p = OUTPUT_DIR / f"predictions_{ds}_{clf}.npz"
             if not p.exists():
                 continue
-            data = np.load(p, allow_pickle=True)
-            proba = data["proba"]
-            y_true = data["y_true"]
-            opt_thresh = float(data["optimal_threshold"]) if "optimal_threshold" in data else None
+            with np.load(p, allow_pickle=False) as data:
+                proba = data["proba"].copy()
+                y_true = data["y_true"].copy()
+                opt_thresh = float(data["optimal_threshold"]) if "optimal_threshold" in data else None
             pos = int(y_true.sum())
-            total = len(y_true)
-            roc_auc = roc_auc_score(y_true, proba) if pos > 0 else float("nan")
-            pr_auc = average_precision_score(y_true, proba) if pos > 0 else float("nan")
+            n = len(y_true)
+            total = n
+            if n == 0:
+                roc_auc = float("nan")
+                pr_auc = float("nan")
+            elif pos == 0 or pos == n:
+                roc_auc = float("nan")
+                pr_auc = float("nan")
+            else:
+                roc_auc = roc_auc_score(y_true, proba)
+                pr_auc = average_precision_score(y_true, proba)
             preds_05 = (proba >= 0.5).astype(int)
             r_05 = recall_score(y_true, preds_05, zero_division=0.0)
             p_05 = precision_score(y_true, preds_05, zero_division=0.0)
@@ -60,7 +68,8 @@ def main():
             })
     # Print summary
     for r in results:
-        print(f"\n{r['tag']}: n={r['n']}, pos={r['pos']} ({100*r['pos']/r['n']:.1f}%)")
+        pct = 100 * r["pos"] / r["n"] if r["n"] else 0.0
+        print(f"\n{r['tag']}: n={r['n']}, pos={r['pos']} ({pct:.1f}%)")
         print(f"  ROC-AUC={r['roc_auc']:.4f}  PR-AUC={r['pr_auc']:.4f}")
         print(f"  @0.5: R={r['r_05']*100:.2f}% P={r['p_05']*100:.2f}% F1={r['f1_05']*100:.2f}%")
         if r["opt_thresh"] is not None:

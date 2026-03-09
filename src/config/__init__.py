@@ -13,5 +13,5 @@ IBM_DATA_DIR: Path | None = _default
 try:
     from src.config.local import IBM_DATA_DIR as _local
     IBM_DATA_DIR = _local
-except ImportError:
+except ModuleNotFoundError:
     pass

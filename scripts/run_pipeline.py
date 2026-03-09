@@ -55,6 +55,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.stride <= 0:
+        parser.error("--stride must be > 0")
+    if args.max_rows < 0:
+        parser.error("--max-rows must be >= 0")
+
     if args.data == "both":
         data_sources = ["ibm", "synthetic"]
     elif args.data == "all":

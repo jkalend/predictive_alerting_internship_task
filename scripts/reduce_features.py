@@ -13,7 +13,7 @@ import duckdb
 
 def get_data_dir() -> Path:
     """Resolve data directory relative to project root."""
-    return Path(__file__).resolve().parents[2] / "data"
+    return Path(__file__).resolve().parents[1] / "data"
 
 
 def reduce_features(
