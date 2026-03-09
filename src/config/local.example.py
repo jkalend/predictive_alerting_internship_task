@@ -10,4 +10,4 @@ from pathlib import Path
 
 # Directory containing reduced_features_full.parquet and anomaly_windows.csv
 # (output of scripts/reduce_features.py, or your IBM Cloud data location)
-IBM_DATA_DIR: Path = Path("")  # e.g. Path("E:/Side-Projects/chronos-experiments-3-done-NotOnGH/data")
+IBM_DATA_DIR: Path = Path("")  # e.g. Path("E:/Side-Projects/chronos-experiments-3/data")
